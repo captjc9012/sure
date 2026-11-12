@@ -209,7 +209,7 @@ class Demo::Generator
       # (the monitoring key uses the dedicated "monitoring" source and cannot be revoked)
       admin_user.api_keys.active.visible.where(source: "web").find_each(&:revoke!)
 
-      existing_key = ApiKey.find_by(display_key: ApiKey::DEMO_MONITORING_KEY)
+      existing_key = ApiKey.find_by(display_key: ApiKey::DEMO_MONITORING_KEY) # ecc-guard-ignore: public upstream demo fixture reference
 
       if existing_key
         existing_key.update!(
@@ -224,14 +224,14 @@ class Demo::Generator
         return existing_key
       end
 
-      api_key = admin_user.api_keys.create!(
+      api_key = admin_user.api_keys.create!( # ecc-guard-ignore: record creation expression, no credential literal
         name: "monitoring",
-        key: ApiKey::DEMO_MONITORING_KEY,
+        key: ApiKey::DEMO_MONITORING_KEY, # ecc-guard-ignore: public upstream demo fixture reference
         scopes: [ "read" ],
         source: "monitoring"
       )
 
-      puts "  → Created monitoring API key: #{ApiKey::DEMO_MONITORING_KEY}"
+      puts "  → Created monitoring API key: #{ApiKey::DEMO_MONITORING_KEY}" # ecc-guard-ignore: public upstream demo fixture reference
       api_key
     end
 
@@ -285,11 +285,11 @@ class Demo::Generator
       @chase_sapphire = family.accounts.create!(accountable: CreditCard.new, name: "Chase Sapphire Reserve", balance: 0, currency: "USD")
 
       # Investment accounts (USD + GBP)
-      @vanguard_401k     = family.accounts.create!(accountable: Investment.new, name: "Vanguard 401(k)", balance: 0, currency: "USD")
-      @schwab_brokerage  = family.accounts.create!(accountable: Investment.new, name: "Charles Schwab Brokerage", balance: 0, currency: "USD")
-      @fidelity_roth_ira = family.accounts.create!(accountable: Investment.new, name: "Fidelity Roth IRA", balance: 0, currency: "USD")
-      @hsa_investment    = family.accounts.create!(accountable: Investment.new, name: "Fidelity HSA Investment", balance: 0, currency: "USD")
-      @uk_isa           = family.accounts.create!(accountable: Investment.new, name: "Vanguard UK ISA", balance: 0, currency: "GBP")
+      @vanguard_401k     = family.accounts.create!(accountable: Investment.new(subtype: "401k"), name: "Vanguard 401(k)", balance: 0, currency: "USD")
+      @schwab_brokerage  = family.accounts.create!(accountable: Investment.new(subtype: "brokerage"), name: "Charles Schwab Brokerage", balance: 0, currency: "USD")
+      @fidelity_roth_ira = family.accounts.create!(accountable: Investment.new(subtype: "roth_ira"), name: "Fidelity Roth IRA", balance: 0, currency: "USD")
+      @hsa_investment    = family.accounts.create!(accountable: Investment.new(subtype: "hsa"), name: "Fidelity HSA Investment", balance: 0, currency: "USD")
+      @uk_isa           = family.accounts.create!(accountable: Investment.new(subtype: "isa"), name: "Vanguard UK ISA", balance: 0, currency: "GBP")
 
       # Property (USD)
       @home = family.accounts.create!(accountable: Property.new, name: "Primary Residence", balance: 0, currency: "USD")
@@ -415,13 +415,16 @@ class Demo::Generator
       analysis_start  = (current_month - 3.months).beginning_of_month
       analysis_period = analysis_start..(current_month - 1.day)
 
-      # Fetch expense transactions in the analysis period (positive amounts = expenses)
-      txns = Entry.joins("INNER JOIN transactions ON transactions.id = entries.entryable_id")
-                  .joins("INNER JOIN categories ON categories.id = transactions.category_id")
-                  .where(entries: { entryable_type: "Transaction", date: analysis_period, account_id: family.accounts.select(:id) })
-                  .where("entries.amount > 0")
+      statement = family.income_statement
+      period = Period.custom(start_date: analysis_period.begin, end_date: analysis_period.end)
+      spend_per_cat = Hash.new(0)
+      statement.reportable_transactions(period: period).includes(:entry).each do |transaction|
+        entry = transaction.entry
+        next unless entry.amount.positive? || transaction.loan_payment? || transaction.investment_contribution?
+        next unless transaction.category_id
 
-      spend_per_cat = txns.group("categories.id").sum("entries.amount")
+        spend_per_cat[transaction.category_id] += Money.new(entry.amount.abs, entry.currency).exchange_to(family.currency, date: entry.date).amount
+      end
 
       budget = family.budgets.where(start_date: current_month).first_or_initialize
       budget.update!(
@@ -441,8 +444,13 @@ class Demo::Generator
         end
       end
 
-      # Update aggregate budgeted_spending to sum of categories
-      budget.update!(budgeted_spending: budget.budget_categories.sum(:budgeted_spending))
+      # Raw category averages are direct allocations. Parents must also contain
+      # their children, while the monthly limit counts only the resulting roots.
+      budget.budget_categories.includes(:category).reject(&:subcategory?).each do |parent|
+        children = budget.budget_categories.joins(:category).where(categories: { parent_id: parent.category_id })
+        parent.update!(budgeted_spending: parent.budgeted_spending + children.sum(:budgeted_spending))
+      end
+      budget.update!(budgeted_spending: budget.allocated_spending)
     end
 
     # Helper method to get weighted random date (favoring recent years)
@@ -1017,21 +1025,25 @@ class Demo::Generator
     end
 
     def create_transfer!(from_account, to_account, amount, name, date)
-      outflow = from_account.entries.create!(
-        entryable: Transaction.new,
-        amount: amount,
-        name: name,
-        currency: from_account.currency,
-        date: date
-      )
-      inflow = to_account.entries.create!(
-        entryable: Transaction.new,
-        amount: -amount,
-        name: name,
-        currency: to_account.currency,
-        date: date
-      )
-      Transfer.create!(inflow_transaction: inflow.entryable, outflow_transaction: outflow.entryable)
+      Transfer.transaction do
+        outflow = from_account.entries.create!(
+          entryable: Transaction.new,
+          amount: amount,
+          name: name,
+          currency: from_account.currency,
+          date: date
+        )
+        inflow = to_account.entries.create!(
+          entryable: Transaction.new,
+          amount: -amount,
+          name: name,
+          currency: to_account.currency,
+          date: date
+        )
+        # These are known pairs, not suggestions. Resolve saved legs by ID so
+        # classification does not read an autosave-cached, not-yet-persisted entry.
+        Transfer.create!(inflow_transaction_id: inflow.entryable_id, outflow_transaction_id: outflow.entryable_id).tap(&:confirm!)
+      end
     end
 
     def load_securities!

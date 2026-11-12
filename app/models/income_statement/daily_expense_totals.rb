@@ -25,6 +25,8 @@ class IncomeStatement::DailyExpenseTotals
     # No finance accounts means no transactions to report
     return [] if @included_account_ids&.empty?
 
+    validate_transaction_rates!
+
     ActiveRecord::Base.connection.select_all(query_sql).map do |row|
       if @by_category
         CategoryDailyTotal.new(date: row["day"].to_date, category_id: row["category_id"], total: row["total"])

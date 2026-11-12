@@ -14,6 +14,41 @@ class Balance::MaterializerTest < ActiveSupport::TestCase
     )
   end
 
+  test "future entries do not become the current account balance" do
+    create_valuation(account: @account, date: Date.current - 1, amount: 1000)
+    create_transaction(account: @account, date: Date.current + 5, amount: 200)
+
+    Balance::Materializer.new(@account, strategy: :forward).materialize_balances
+
+    assert_equal 1000, @account.reload.balance
+    assert_equal 1000, @account.cash_balance
+    assert_nil @account.balances.find_by(date: Date.current + 5)
+    travel_to 5.days.from_now do
+      Balance::Materializer.new(@account, strategy: :forward).materialize_balances
+      assert_equal 800, @account.reload.balance
+    end
+  end
+
+  test "future cash entries cannot create a zero-holdings cliff after midnight" do
+    today = Date.current
+    create_valuation(account: @account, date: today - 1, amount: 1000)
+    security = Security.create!(ticker: "CLIFF", name: "Cross-day position")
+    create_trade(security, account: @account, qty: 1, price: 100, date: today)
+    create_transaction(account: @account, amount: -200, date: today + 5)
+
+    Balance::Materializer.new(@account, strategy: :forward).materialize_balances
+    assert_equal today, @account.balances.maximum(:date)
+    assert_equal 1000, @account.reload.balance
+
+    travel_to 1.day.from_now do
+      series = Balance::ChartSeriesBuilder.new(account_ids: [ @account.id ], currency: "USD", period: Period.last_30_days).balance_series
+      assert_equal 1000, series.trend.current.amount
+      Balance::Materializer.new(@account, strategy: :forward).materialize_balances
+      assert_equal 1000, @account.reload.balance
+      assert_equal 100, @account.balances.find_by!(date: Date.current).end_non_cash_balance
+    end
+  end
+
   test "syncs balances" do
     Holding::Materializer.any_instance.expects(:materialize_holdings).returns([]).once
 

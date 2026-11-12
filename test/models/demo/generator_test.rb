@@ -28,6 +28,26 @@ class Demo::GeneratorTest < ActiveSupport::TestCase
     end
   end
 
+  test "demo budget parent allocation includes its children exactly once" do
+    parent = @family.categories.create!(name: "Parent")
+    child = @family.categories.create!(name: "Child", parent: parent)
+    account = @family.accounts.create!(name: "Checking", currency: "USD", balance: 0, accountable: Depository.new)
+    [ [ parent, 100 ], [ child, 200 ] ].each do |category, amount|
+      account.entries.create!(date: Date.current.beginning_of_month - 5, amount: amount, currency: "USD", name: "Expense", entryable: Transaction.new(category: category))
+    end
+    generator = Demo::Generator.new(seed: 42)
+    generator.stubs(:create_family_and_users!).returns(@family)
+    %i[create_realistic_categories! create_realistic_accounts! create_realistic_transactions! generate_goals! create_monitoring_api_key!].each { |step| generator.stubs(step) }
+
+    generator.generate_default_data!(skip_clear: true, email: @admin_user.email)
+
+    budget = @family.budgets.find_by!(start_date: Date.current.beginning_of_month)
+    assert_equal 75, budget.budget_categories.find_by!(category: child).budgeted_spending
+    assert_equal 100, budget.budget_categories.find_by!(category: parent).budgeted_spending
+    assert_equal 100, budget.budgeted_spending
+    assert_equal budget.budgeted_spending, budget.allocated_spending
+  end
+
   test "production sample reset includes Wallet in the normal accounts and transactions phases" do
     Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
     generator = Demo::Generator.new(seed: 42)
@@ -61,6 +81,51 @@ class Demo::GeneratorTest < ActiveSupport::TestCase
     assert_demo_loan_payments
   end
 
+  test "known demo loan transfers are confirmed and count principal only once" do
+    generator = Demo::Generator.new(seed: 42)
+    stub_non_loan_activity(generator)
+    @family.expects(:sync_later)
+
+    generator.generate_new_user_data_for!(@family, email: @admin_user.email)
+
+    transfers = Transfer.joins(inflow_transaction: { entry: :account }).where(accounts: { family_id: @family.id })
+    assert transfers.any?, "the sample must generate actual loan transfers"
+    transfers.each do |transfer|
+      assert_predicate transfer, :confirmed?
+      assert_equal "loan_payment", transfer.outflow_transaction.kind
+      assert_equal "funds_movement", transfer.inflow_transaction.kind
+    end
+
+    period = Period.current_month
+    statement = @family.income_statement(user: @admin_user)
+    budget = Budget.find_or_bootstrap(@family, start_date: period.start_date, user: @admin_user)
+    assert statement.expense_totals(period: period).total.positive?
+    assert_equal 0, statement.income_totals(period: period).total
+    assert_equal statement.expense_totals(period: period).total, budget.actual_spending
+  end
+
+  test "known demo funding transfers use confirmed destination-specific kinds" do
+    generator = Demo::Generator.new(seed: 42)
+    generator.stubs(:create_family_and_users!).returns(@family)
+    generator.stubs(:create_monitoring_api_key!)
+    stub_non_wallet_activity(generator)
+    generator.unstub(:generate_transfers_and_payments!)
+
+    generator.generate_default_data!(skip_clear: true, email: @admin_user.email)
+
+    { "Vanguard 401(k)" => "401k", "Charles Schwab Brokerage" => "brokerage", "Fidelity Roth IRA" => "roth_ira", "Fidelity HSA Investment" => "hsa", "Vanguard UK ISA" => "isa" }.each do |name, subtype|
+      assert_equal subtype, @family.accounts.find_by!(name: name).accountable.subtype
+    end
+
+    expected_kinds = { "Monthly Ally Transfer" => "funds_movement", "Amex Payment" => "cc_payment", "HSA Contribution" => "investment_contribution" }
+    expected_kinds.each do |name, kind|
+      outgoing = @family.accounts.find_by!(name: "Chase Premier Checking").entries.find_by!(name: name).entryable
+      assert_predicate outgoing.transfer, :confirmed?
+      assert_equal kind, outgoing.kind
+      assert_equal "funds_movement", outgoing.transfer.inflow_transaction.kind
+    end
+  end
+
   test "default demo generates loan payments inside a refresh transaction" do
     generator = Demo::Generator.new(seed: 42)
     generator.stubs(:create_family_and_users!).returns(@family)
@@ -78,7 +143,7 @@ class Demo::GeneratorTest < ActiveSupport::TestCase
     stale_user = create_user!(stale_family, "old-demo-admin@example.com")
     stale_key = stale_user.api_keys.create!(
       name: "monitoring",
-      key: ApiKey::DEMO_MONITORING_KEY,
+      key: ApiKey::DEMO_MONITORING_KEY, # ecc-guard-ignore: public upstream demo fixture reference
       scopes: [ "read" ],
       source: "monitoring"
     )
@@ -89,13 +154,13 @@ class Demo::GeneratorTest < ActiveSupport::TestCase
     assert_equal @admin_user, monitoring_key.user
     assert_equal "monitoring", monitoring_key.source
     assert_equal [ "read" ], monitoring_key.scopes
-    assert_equal 1, ApiKey.where(display_key: ApiKey::DEMO_MONITORING_KEY).count
+    assert_equal 1, ApiKey.where(display_key: ApiKey::DEMO_MONITORING_KEY).count # ecc-guard-ignore: test assertion over public demo fixture
   end
 
   test "monitoring api key creation reuses the current admin user's key" do
     existing_key = @admin_user.api_keys.create!(
       name: "monitoring",
-      key: ApiKey::DEMO_MONITORING_KEY,
+      key: ApiKey::DEMO_MONITORING_KEY, # ecc-guard-ignore: public upstream demo fixture reference
       scopes: [ "read" ],
       source: "monitoring"
     )
@@ -103,7 +168,7 @@ class Demo::GeneratorTest < ActiveSupport::TestCase
     monitoring_key = Demo::Generator.new.send(:create_monitoring_api_key!, @family)
 
     assert_equal existing_key, monitoring_key
-    assert_equal 1, ApiKey.where(display_key: ApiKey::DEMO_MONITORING_KEY).count
+    assert_equal 1, ApiKey.where(display_key: ApiKey::DEMO_MONITORING_KEY).count # ecc-guard-ignore: test assertion over public demo fixture
   end
 
   # Regression for a `rake demo_data:default` crash: the goal-seeding matrix

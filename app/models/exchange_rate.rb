@@ -18,6 +18,19 @@ class ExchangeRate < ApplicationRecord
     false
   end
 
+  # Exact ledger-day rates match the SQL income/investment aggregations.
+  # Do not turn an unknown conversion into a plausible-looking 1:1 amount.
+  def self.validate_entry_rates!(entries, to:)
+    missing = entries.where.not(currency: to).where.not(amount: 0)
+      .where.not("EXISTS (SELECT 1 FROM exchange_rates er WHERE er.from_currency = entries.currency AND er.to_currency = ? AND er.date = entries.date)", to)
+      .order(:date).pick(:currency, :date)
+    return unless missing
+
+    from, date = missing
+    Rails.logger.error("Missing ledger exchange rate: from=#{from}, to=#{to}, date=#{date}")
+    raise Money::ConversionError.new(from_currency: from, to_currency: to, date: date)
+  end
+
   private
     def rate_must_convert_amounts
       errors.add(:rate, :greater_than, count: 0) unless self.class.valid_rate?(rate)

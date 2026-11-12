@@ -10,6 +10,22 @@
 # aliases (`ae`, `a`). The including class must set `@family`.
 module IncomeStatement::ScopedTransactionsQuery
   private
+    # Validate precisely the reportable rows before SQL aggregation can substitute
+    # parity for a missing foreign rate. The exception retains the ledger date.
+    def validate_transaction_rates!
+      scope = @transactions_scope || @family.transactions.visible.excluding_pending
+      scope = scope.joins(entry: :account)
+        .where(entries: { excluded: false }, accounts: { family_id: @family.id, exclude_from_reports: false })
+        .where.not(kind: Transaction::BUDGET_EXCLUDED_KINDS)
+        .where("transactions.investment_activity_label IS NULL OR transactions.investment_activity_label NOT IN (?)", [ "Transfer", "Sweep In", "Sweep Out", "Exchange" ])
+      ids = @included_account_ids || @account_ids
+      scope = scope.where(entries: { account_id: ids }) unless ids.nil?
+      scope = scope.where.not(accounts: { id: @family.tax_advantaged_account_ids })
+      scope = scope.where(entries: { date: @date_range }) if @date_range
+      entries = Entry.where(id: scope.select("entries.id"))
+      ExchangeRate.validate_entry_rates!(entries, to: @family.currency)
+    end
+
     # Contributions and loan payments are cash outflows whatever their
     # sign, so they classify as expense; other negative amounts classify as
     # income. A family that does not count investing as spending gets its

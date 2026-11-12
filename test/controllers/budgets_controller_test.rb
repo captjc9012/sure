@@ -7,6 +7,14 @@ class BudgetsControllerTest < ActionDispatch::IntegrationTest
     ensure_tailwind_build
   end
 
+  test "income above expectation is labelled surplus rather than overspending" do
+    @user.update!(locale: "zh-TW")
+    budgets(:one).update!(expected_income: 0)
+    get budget_url(Budget.date_to_param(Date.current))
+    assert_response :success
+    assert_select "#main", text: /超出預期收入/
+  end
+
   test "index redirects to the current month budget" do
     get budgets_url
 

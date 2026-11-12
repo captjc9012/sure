@@ -28,6 +28,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
 
     ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: date, rate: 1.5)
+    ExchangeRate.find_or_initialize_by(from_currency: "EUR", to_currency: "USD", date: Date.current).update!(rate: 1.5)
     account.holdings.create!(security: security, date: date, qty: 5, price: 150,
                              amount: BigDecimal(750), currency: "EUR", cost_basis: 100)
     create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
@@ -58,6 +59,8 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     # and 2nd of a month a fresh row for its first day breaks uniqueness.
     ExchangeRate.find_or_initialize_by(from_currency: "EUR", to_currency: "GBP", date: date).update!(rate: 0.8)
     ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: date, rate: 1.25)
+    ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: date, rate: 1)
+    ExchangeRate.find_or_initialize_by(from_currency: "GBP", to_currency: "USD", date: Date.current).update!(rate: 1.25)
     account.holdings.create!(security: security, date: date, qty: 5, price: 150,
                              amount: BigDecimal(750), currency: "GBP", cost_basis: 100)
     create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
@@ -91,6 +94,30 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     get reports_path
 
     assert_response :ok
+  end
+
+  test "breakdown and CSV use the same posted cash flow as the summary" do
+    @family.accounts.each { |account| account.entries.destroy_all }
+    account = accounts(:depository)
+    category = categories(:food_and_drink)
+    create_transaction(account: account, amount: 200, category: category)
+    pending = create_transaction(account: account, amount: 33.25, category: category)
+    pending.entryable.update!(extra: { "financekit" => { "pending" => true } })
+    create_transaction(account: account, amount: -50, category: category)
+    create_trade(securities(:aapl), account: account, qty: -1, price: 500, date: Date.current)
+    sweep = create_transaction(account: account, amount: 300, category: category)
+    sweep.entryable.update!(investment_activity_label: "Sweep In")
+
+    get reports_path(period_type: :monthly)
+    assert_response :ok
+    rows = controller.instance_variable_get(:@transactions)
+    assert_equal 200, rows.select { |r| r[:type] == "expense" }.sum { |r| r[:total] }
+    assert_equal 50, rows.select { |r| r[:type] == "income" }.sum { |r| r[:total] }
+
+    get export_transactions_reports_path(format: :csv, period_type: :monthly)
+    assert_response :ok
+    assert_includes response.body, "TOTAL EXPENSES,$200.00,$200.00"
+    assert_includes response.body, "TOTAL INCOME,$50.00,$50.00"
   end
 
   test "index renders successfully" do
@@ -248,6 +275,76 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
   end
 
+  test "budget utilization uses the full monthly spending budget" do
+    @family.accounts.each { |account| account.entries.destroy_all }
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current, user: @user)
+    budget.update!(budgeted_spending: 1000, expected_income: 2000)
+    budget.budget_categories.each { |category| category.update!(budgeted_spending: 0) }
+    budget.budget_categories.find_by!(category: categories(:food_and_drink)).update!(budgeted_spending: 100)
+    create_transaction(amount: 250, category: categories(:food_and_drink))
+
+    get reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "p", text: "25.0%", count: 1
+
+    get print_reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select ".tufte-metric-card-value", text: "25.0%", count: 1
+  end
+
+  test "budget utilization works before category amounts are allocated" do
+    @family.accounts.each { |account| account.entries.destroy_all }
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current, user: @user)
+    budget.update!(budgeted_spending: 1000, expected_income: 2000)
+    budget.budget_categories.each { |category| category.update!(budgeted_spending: 0) }
+    create_transaction(amount: 250)
+
+    get reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "p", text: "25.0%", count: 1
+  end
+
+  test "budget utilization does not invent a percentage for an uninitialized budget" do
+    budgets(:one).update!(budgeted_spending: nil)
+
+    get reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "p", text: I18n.t("reports.summary.no_budget_data"), count: 1
+  end
+
+  test "budget utilization handles a zero monthly budget" do
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current, user: @user)
+    budget.update!(budgeted_spending: 0)
+    budget.budget_categories.find_by!(category: categories(:food_and_drink)).update!(budgeted_spending: 100)
+
+    get reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "p", text: "0%", count: 1
+  end
+
+  test "reports show gross expenses while budgets net a refund within its category" do
+    @family.accounts.each { |account| account.entries.destroy_all }
+    create_transaction(amount: 200, category: categories(:food_and_drink))
+    create_transaction(amount: -50, category: categories(:food_and_drink))
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current, user: @user)
+    budget.update!(budgeted_spending: 1000, expected_income: 2000)
+
+    get reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "p", text: "$200.00", minimum: 1
+
+    get budget_path(budget)
+
+    assert_response :ok
+    assert_select "[data-donut-chart-target='amount']", text: "$150.00", minimum: 1
+  end
+
   test "index calculates summary metrics correctly" do
     get reports_path(period_type: :monthly)
     assert_response :ok
@@ -371,7 +468,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
 
   test "export transactions with API key authentication" do
     # Use an active API key with read permissions
-    api_key = api_keys(:active_key)
+    api_key = api_keys(:active_key) # ecc-guard-ignore: test fixture lookup, no credential literal
 
     # Make sure the API key has the correct source
     api_key.update!(source: "web") unless api_key.source == "web"
@@ -645,14 +742,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_select "tr[data-category='category-#{taxable_category.id}']", text: /Reports Taxable Income/
     assert_select "tr[data-category='category-#{retirement_category.id}']", count: 0
 
-    other_investments_rows = css_select("tr[data-category='category-other_investments']")
-    assert_operator other_investments_rows.size, :>=, 1
-    other_investments_rows.each do |row|
-      assert_match(/#{Regexp.escape(Category.other_investments.name)}/, row.text)
-      assert_equal 0, row.css("a").size
-    end
-    assert_match(/#{Regexp.escape(I18n.t("reports.transactions_breakdown.table.entries", count: 1))}/, other_investments_rows.first.text)
-    assert_match(/\$100\.00/, other_investments_rows.first.text)
+    assert_select "tr[data-category='category-other_investments']", count: 0
   end
 
   test "monthly period navigation shows previous month link" do

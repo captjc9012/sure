@@ -10,6 +10,8 @@ class IncomeStatement::CategoryStats
   def call
     return [] if @account_ids&.empty?
 
+    validate_transaction_rates!
+
     ActiveRecord::Base.connection.select_all(sanitized_query_sql).map do |row|
       StatRow.new(
         category_id: row["category_id"],

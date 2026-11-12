@@ -93,7 +93,7 @@ class BalanceSheet::AccountTotals
     # @return [Hash{String => Numeric}] currency code to rate mapping
     def exchange_rates
       @exchange_rates ||= begin
-        foreign_currencies = accounts.filter_map { |a| a.currency if a.currency != family.currency }
+        foreign_currencies = accounts.filter_map { |a| a.currency if a.currency != family.currency && !a.balance.zero? }
         ExchangeRate.rates_for(foreign_currencies, to: family.currency, date: Date.current)
       end
     end
@@ -101,7 +101,7 @@ class BalanceSheet::AccountTotals
     # Converts an account's balance to the family's currency using pre-fetched exchange rates.
     # @return [BigDecimal] balance in the family's currency
     def converted_balance_for(account)
-      return account.balance if account.currency == family.currency
+      return account.balance if account.currency == family.currency || account.balance.zero?
 
       rate = exchange_rates[account.currency]
       account.balance * rate

@@ -40,6 +40,8 @@ class ReportsController < ApplicationController
 
     @period = Period.custom(start_date: @start_date, end_date: @end_date)
 
+    @income_statement = Current.family.income_statement(user: Current.user)
+
     # Build monthly breakdown data for export
     @export_data = build_monthly_breakdown_for_export
 
@@ -325,11 +327,9 @@ class ReportsController < ApplicationController
       return nil unless @period_type == :monthly && @start_date.beginning_of_month.to_date == Date.current.beginning_of_month.to_date
 
       budget = Budget.find_or_bootstrap(Current.family, start_date: @start_date.beginning_of_month.to_date, user: Current.user)
-      return 0 if budget.nil? || budget.allocated_spending.zero?
+      return nil unless budget&.initialized?
 
-      (budget.actual_spending / budget.allocated_spending * 100).round(1)
-    rescue StandardError
-      nil
+      budget.percent_of_budget_spent.round(1)
     end
 
     def build_spending_comparison
@@ -377,32 +377,8 @@ class ReportsController < ApplicationController
     end
 
     def build_transactions_breakdown
-      # Base query: all transactions in the period
-      # Exclude transfers, one-time, and CC payments (matching income_statement logic)
-      transactions = Transaction
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: Current.family.id, status: [ "draft", "active" ] })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Transaction", excluded: false, date: @period.date_range })
-        .where.not(kind: Current.family.analytics_excluded_kinds)
+      transactions = apply_transaction_filters(@income_statement.reportable_transactions(period: @period))
         .includes(entry: :account, category: :parent)
-      transactions = exclude_tax_advantaged_accounts(transactions)
-
-      # Apply filters (includes finance account scoping)
-      transactions = apply_transaction_filters(transactions)
-
-      # Get trades in the period (matching income_statement logic)
-      trades = Trade
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: Current.family.id, status: [ "draft", "active" ] })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Trade", excluded: false, date: @period.date_range })
-        .includes(entry: :account, category: :parent)
-      trades = exclude_tax_advantaged_accounts(trades)
-
-      trades = apply_entry_filters(trades)
 
       # Get sort parameters
       sort_by = %w[amount count].include?(params[:sort_by]) ? params[:sort_by] : "amount"
@@ -447,24 +423,14 @@ class ReportsController < ApplicationController
         }
       end
 
-      # Helper to process an entry (transaction or trade)
-      process_entry = ->(category, entry, is_trade) do
-        type = entry.amount > 0 ? "expense" : "income"
-        begin
-          converted_amount = Money.new(entry.amount.abs, entry.currency).exchange_to(family_currency).amount
-        rescue Money::ConversionError
-          converted_amount = entry.amount.abs
-        end
+      # Helper to process a reportable cash-flow entry
+      process_entry = ->(category, entry) do
+        type = entry.amount > 0 || entry.entryable.loan_payment? || entry.entryable.investment_contribution? ? "expense" : "income"
+        converted_amount = Money.new(entry.amount.abs, entry.currency).exchange_to(family_currency, date: entry.date).amount
 
         if category.nil?
-          # Uncategorized or Other Investments (for trades)
-          if is_trade
-            parent_key = [ :other_investments, type ]
-            grouped_data[parent_key] ||= init_category_group.call(:other_investments, Category.other_investments.name, Category.other_investments.color, Category.other_investments.lucide_icon, type, Category.other_investments.name)
-          else
-            parent_key = [ :uncategorized, type ]
-            grouped_data[parent_key] ||= init_category_group.call(:uncategorized, Category.uncategorized.name, Category.uncategorized.color, Category.uncategorized.lucide_icon, type, Category.uncategorized.filter_value)
-          end
+          parent_key = [ :uncategorized, type ]
+          grouped_data[parent_key] ||= init_category_group.call(:uncategorized, Category.uncategorized.name, Category.uncategorized.color, Category.uncategorized.lucide_icon, type, Category.uncategorized.filter_value)
         elsif category.parent_id.present?
           # This is a subcategory - group under parent
           parent = category.parent
@@ -475,7 +441,7 @@ class ReportsController < ApplicationController
           grouped_data[parent_key][:subcategories][category.id] ||= init_subcategory.call(category)
           grouped_data[parent_key][:subcategories][category.id][:count] += 1
           grouped_data[parent_key][:subcategories][category.id][:total] += converted_amount
-          grouped_data[parent_key][:subcategories][category.id][:has_transactions] = true unless is_trade
+          grouped_data[parent_key][:subcategories][category.id][:has_transactions] = true
         else
           # This is a root category (no parent)
           parent_key = [ category.id, type ]
@@ -484,17 +450,12 @@ class ReportsController < ApplicationController
 
         grouped_data[parent_key][:count] += 1
         grouped_data[parent_key][:total] += converted_amount
-        grouped_data[parent_key][:has_transactions] = true unless is_trade
+        grouped_data[parent_key][:has_transactions] = true
       end
 
       # Process transactions
       transactions.each do |transaction|
-        process_entry.call(transaction.category, transaction.entry, false)
-      end
-
-      # Process trades
-      trades.each do |trade|
-        process_entry.call(trade.category, trade.entry, true)
+        process_entry.call(transaction.category, transaction.entry)
       end
 
       # Convert to array and sort subcategories
@@ -677,7 +638,8 @@ class ReportsController < ApplicationController
 
       # Get net worth series for the period to calculate change
       # The series.trend gives us the change from first to last value in the period
-      net_worth_series = balance_sheet.net_worth_series(period: @period)
+      observed_period = Period.custom(start_date: [ @start_date, Date.current ].min, end_date: [ @end_date, Date.current ].min)
+      net_worth_series = balance_sheet.net_worth_series(period: observed_period)
       trend = net_worth_series&.trend
 
       # Get asset and liability groups for breakdown
@@ -692,7 +654,7 @@ class ReportsController < ApplicationController
       # Monthly net worth series with per-account-group breakdown for the chart
       breakdown_series = BalanceSheet::NetWorthBreakdownSeriesBuilder
         .new(Current.family, user: Current.user)
-        .breakdown_series(period: @period)
+        .breakdown_series(period: observed_period)
 
       {
         current_net_worth: Money.new(current_net_worth, currency),
@@ -771,17 +733,8 @@ class ReportsController < ApplicationController
     def build_transactions_breakdown_for_export
       # Get flat transactions list (not grouped) for export
       # Exclude transfers, one-time, and CC payments (matching income_statement logic)
-      transactions = Transaction
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: Current.family.id, status: [ "draft", "active" ] })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Transaction", excluded: false, date: @period.date_range })
-        .where.not(kind: Current.family.analytics_excluded_kinds)
+      transactions = apply_transaction_filters(@income_statement.reportable_transactions(period: @period))
         .includes(entry: :account, category: [])
-      transactions = exclude_tax_advantaged_accounts(transactions)
-
-      transactions = apply_transaction_filters(transactions)
 
       sort_by = params[:sort_by] || "date"
       # Whitelist sort_direction to prevent SQL injection
@@ -810,17 +763,8 @@ class ReportsController < ApplicationController
 
       # Get all transactions in the period
       # Exclude transfers, one-time, and CC payments (matching income_statement logic)
-      transactions = Transaction
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: Current.family.id, status: [ "draft", "active" ] })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Transaction", excluded: false, date: @period.date_range })
-        .where.not(kind: Current.family.analytics_excluded_kinds)
+      transactions = apply_transaction_filters(@income_statement.reportable_transactions(period: @period))
         .includes(entry: :account, category: [])
-      transactions = exclude_tax_advantaged_accounts(transactions)
-
-      transactions = apply_transaction_filters(transactions)
 
       # Group by category, type, and month
       breakdown = {}
@@ -829,17 +773,13 @@ class ReportsController < ApplicationController
       # Process transactions
       transactions.each do |transaction|
         entry = transaction.entry
-        is_expense = entry.amount > 0
+        is_expense = entry.amount > 0 || transaction.loan_payment? || transaction.investment_contribution?
         type = is_expense ? "expense" : "income"
         category_name = transaction.category&.name || "Uncategorized"
         month_key = entry.date.beginning_of_month
 
         # Convert to family currency
-        begin
-          converted_amount = Money.new(entry.amount.abs, entry.currency).exchange_to(family_currency).amount
-        rescue Money::ConversionError
-          converted_amount = entry.amount.abs
-        end
+        converted_amount = Money.new(entry.amount.abs, entry.currency).exchange_to(family_currency, date: entry.date).amount
 
         key = [ category_name, type ]
         breakdown[key] ||= { category: category_name, type: type, months: {}, total: 0 }
@@ -1143,7 +1083,7 @@ class ReportsController < ApplicationController
         return false
       end
 
-      @api_key = ApiKey.find_by_value(api_key_value)
+      @api_key = ApiKey.find_by_value(api_key_value) # ecc-guard-ignore: API lookup expression, no credential literal
 
       unless @api_key && @api_key.active?
         render plain: "Invalid or expired API key", status: :unauthorized

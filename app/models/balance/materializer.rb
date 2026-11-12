@@ -38,6 +38,7 @@ class Balance::Materializer
       # Query fresh balance from DB to get generated column values
       current_balance = account.balances
         .where(currency: account.currency)
+        .where("date <= ?", Date.current)
         .order(date: :desc)
         .first
 
@@ -50,7 +51,7 @@ class Balance::Materializer
         calculated_cash_balance = 0
       end
 
-      Rails.logger.info("Balance update: cash=#{calculated_cash_balance}, total=#{calculated_balance}")
+      Rails.logger.info("Balance update: account=#{account.id}, as_of=#{Date.current}, source_date=#{current_balance&.date}, cash=#{calculated_cash_balance}, total=#{calculated_balance}")
 
       account.update!(
         balance: calculated_balance,

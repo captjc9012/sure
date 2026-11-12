@@ -17,6 +17,15 @@ class IncomeStatement
     @accounts = accounts
   end
 
+  # Shared row scope for report detail and exports. Trades are portfolio activity,
+  # not household income or spending; pending activity is not posted cash flow.
+  def reportable_transactions(period:)
+    family.transactions.visible.excluding_pending.in_period(period)
+      .where(entries: { account_id: eligible_accounts.select(:id), excluded: false })
+      .where.not(kind: family.analytics_excluded_kinds)
+      .where("transactions.investment_activity_label IS NULL OR transactions.investment_activity_label NOT IN (?)", [ "Transfer", "Sweep In", "Sweep Out", "Exchange" ])
+  end
+
   def totals(transactions_scope: nil, date_range:)
     # Default to excluding pending transactions from budget/analytics calculations
     # Pending transactions shouldn't affect budget totals until they post

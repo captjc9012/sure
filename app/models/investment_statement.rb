@@ -172,10 +172,12 @@ class InvestmentStatement
     account_ids = investment_account_ids
     return nil if account_ids.empty?
 
-    absolute_return = ActiveRecord::Base.connection.select_value(
+    absolute_return = converted_return_value(
       ActiveRecord::Base.sanitize_sql_array([
         <<~SQL.squish,
-          SELECT COALESCE(SUM(b.net_market_flows * COALESCE(er.rate, 1)), 0)
+          SELECT COALESCE(SUM(b.net_market_flows * COALESCE(er.rate, 1)), 0) AS value,
+            MIN(b.currency) FILTER (WHERE b.currency <> :currency AND b.net_market_flows <> 0 AND er.rate IS NULL) AS missing_currency,
+            MIN(b.date) FILTER (WHERE b.currency <> :currency AND b.net_market_flows <> 0 AND er.rate IS NULL) AS missing_date
           FROM balances b
           JOIN accounts a ON a.id = b.account_id
           LEFT JOIN exchange_rates er ON (
@@ -193,7 +195,7 @@ class InvestmentStatement
           account_ids: account_ids,
           family_id: family.id,
           start_date: period.date_range.begin,
-          end_date: period.date_range.end
+          end_date: [ period.date_range.end, Date.current ].min
         }
       ])
     ).to_d
@@ -204,10 +206,12 @@ class InvestmentStatement
     # double-counting the first day's net_market_flows in both the denominator and absolute_return).
     # FX conversion is done in SQL (matching absolute_return) so balance rows whose currency
     # differs from the account's current currency (e.g. after a currency change) are still picked up.
-    start_value = ActiveRecord::Base.connection.select_value(
+    start_value = converted_return_value(
       ActiveRecord::Base.sanitize_sql_array([
         <<~SQL.squish,
-          SELECT COALESCE(SUM(b.end_balance * COALESCE(er.rate, 1)), 0)
+          SELECT COALESCE(SUM(b.end_balance * COALESCE(er.rate, 1)), 0) AS value,
+            MIN(b.currency) FILTER (WHERE b.currency <> :currency AND b.end_balance <> 0 AND er.rate IS NULL) AS missing_currency,
+            :period_start::date AS missing_date
           FROM accounts a
           INNER JOIN balances b ON b.account_id = a.id
           LEFT JOIN exchange_rates er ON (
@@ -269,12 +273,21 @@ class InvestmentStatement
   end
 
   private
+    def converted_return_value(sql)
+      row = ActiveRecord::Base.connection.select_one(sql)
+      if row["missing_currency"]
+        Rails.logger.error("Missing investment return FX: family=#{family.id}, from=#{row['missing_currency']}, to=#{family.currency}, date=#{row['missing_date']}")
+        raise Money::ConversionError.new(from_currency: row["missing_currency"], to_currency: family.currency, date: row["missing_date"])
+      end
+      row.fetch("value").to_d
+    end
+
     # Today's rates for every currency present on the family's investment
     # accounts and their holdings. Mirrors BalanceSheet::AccountTotals#exchange_rates.
     def exchange_rates
       @exchange_rates ||= begin
-        account_currencies = investment_accounts.map(&:currency)
-        holding_currencies = Holding.where(account_id: investment_account_ids).distinct.pluck(:currency)
+        account_currencies = investment_accounts.reject { |a| a.balance.zero? && a.cash_balance.zero? }.map(&:currency)
+        holding_currencies = current_holdings.where.not(amount: 0).distinct.pluck(:currency)
         foreign = (account_currencies + holding_currencies)
                     .compact
                     .uniq
@@ -291,8 +304,8 @@ class InvestmentStatement
     def convert_to_family_currency(amount, from_currency)
       return amount if amount.nil?
       numeric = amount.is_a?(Money) ? amount.amount : amount
-      return numeric if from_currency == family.currency
-      rate = exchange_rates[from_currency] || 1
+      return numeric if from_currency == family.currency || numeric.zero?
+      rate = exchange_rates.fetch(from_currency)
       numeric * rate
     end
 

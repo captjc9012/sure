@@ -56,9 +56,9 @@ module ExchangeRate::Provided
     end
 
     # Batch-fetches exchange rates for multiple source currencies.
-    # Returns a hash mapping each currency to its numeric rate, defaulting to 1 when unavailable.
+    # Returns currency-to-rate mappings. Missing conversions fail explicitly.
     def rates_for(currencies, to:, date: Date.current)
-      unique_currencies = currencies.uniq
+      unique_currencies = currencies.uniq - [ to ]
       return {} if unique_currencies.empty?
 
       # Batch-load exact-date matches in a single query
@@ -91,11 +91,12 @@ module ExchangeRate::Provided
       unique_currencies.each_with_object({}) do |currency, result|
         rate = exact_rates[currency] || nearest_rates[currency] || fetched_rates[currency]
         if rate.nil?
-          Rails.logger.warn("No exchange rate found for #{currency}/#{to} on #{date}, using 1")
+          Rails.logger.error("Missing exchange rate: from=#{currency}, to=#{to}, date=#{date}")
+          raise Money::ConversionError.new(from_currency: currency, to_currency: to, date: date)
         elsif rate.date != date
           Rails.logger.debug("FX rate #{currency}/#{to}: using #{rate.date} for #{date} (gap=#{(date - rate.date).to_i}d)")
         end
-        result[currency] = rate&.rate || 1
+        result[currency] = rate.rate
       end
     end
 
@@ -115,7 +116,7 @@ module ExchangeRate::Provided
       # expiry. TTL is 5 minutes to cover worst-case throttle + rate-limit retry waits
       # (~3 minutes with TwelveData).
       lock_key = "exchange_rate_import:#{from}:#{to}:#{start_date}"
-      lock_token = SecureRandom.uuid
+      lock_token = SecureRandom.uuid # ecc-guard-ignore: randomly generated lock owner, no credential literal
       acquired = Rails.cache.write(lock_key, lock_token, expires_in: 5.minutes, unless_exist: true)
 
       unless acquired

@@ -7,6 +7,15 @@ class BalanceSheetTest < ActiveSupport::TestCase
     @family = families(:empty)
   end
 
+  test "a zero foreign balance does not need an exchange rate" do
+    create_account(balance: 0, currency: "EUR", accountable: Depository.new)
+    create_account(balance: 100, currency: "GBP", accountable: Depository.new)
+    ExchangeRate.where(from_currency: "EUR", to_currency: "USD").delete_all
+    ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: Date.current, rate: 1.25)
+    assert_equal 125, BalanceSheet.new(@family).assets.total
+    assert_equal 125, Depository.balance_money(@family)
+  end
+
   test "calculates total assets" do
     assert_equal 0, BalanceSheet.new(@family).assets.total
 

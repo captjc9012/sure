@@ -7,6 +7,34 @@ class InvestmentStatementTest < ActiveSupport::TestCase
     @statement = InvestmentStatement.new(@family, user: nil)
   end
 
+  test "zero foreign accounts need no exchange rate" do
+    create_investment_account(balance: 0, cash_balance: 0, currency: "EUR")
+    create_investment_account(balance: 100, cash_balance: 100, currency: "GBP")
+    ExchangeRate.where(from_currency: "EUR", to_currency: "USD").delete_all
+    ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: Date.current, rate: 1.25)
+    assert_equal 125, @statement.portfolio_value
+    assert_equal 125, @statement.cash_balance
+  end
+
+  test "period return refuses a missing ledger-day FX rate" do
+    account = create_investment_account(balance: 1000, currency: "EUR")
+    account.balances.create!(date: Date.current.beginning_of_month - 1, currency: "EUR", balance: 1000, start_cash_balance: 1000)
+    account.balances.create!(date: Date.current, currency: "EUR", balance: 1100, start_cash_balance: 1000, net_market_flows: 100)
+    ExchangeRate.where(from_currency: "EUR", to_currency: "USD").delete_all
+
+    assert_raises(Money::ConversionError) { @statement.period_return_trend(period: Period.current_month) }
+  end
+
+  test "period return excludes future balance projections" do
+    account = create_investment_account(balance: 1000)
+    account.balances.create!(date: Date.current.beginning_of_month - 1, currency: "USD", balance: 1000, start_cash_balance: 1000, flows_factor: 1)
+    account.balances.create!(date: Date.current, currency: "USD", balance: 1100, start_cash_balance: 1000, net_market_flows: 100, flows_factor: 1)
+    account.balances.create!(date: Date.current.end_of_month + 1, currency: "USD", balance: 1, start_cash_balance: 1100, net_market_flows: -1099, flows_factor: 1)
+
+    period = Period.custom(start_date: Date.current.beginning_of_month, end_date: Date.current.end_of_month + 1)
+    assert_equal 100, @statement.period_return_trend(period: period).value.amount
+  end
+
   test "portfolio_value and cash_balance with a single-currency family" do
     create_investment_account(balance: 1000, cash_balance: 100)
 
@@ -34,12 +62,11 @@ class InvestmentStatementTest < ActiveSupport::TestCase
     assert_in_delta 2083.92, @statement.holdings_value, 0.001
   end
 
-  test "portfolio_value falls back to 1:1 when FX rate is missing" do
+  test "portfolio_value refuses missing FX rates" do
     create_investment_account(balance: 1921.92, currency: "USD")
     create_investment_account(balance: 1000, currency: "EUR")
 
-    # No ExchangeRate row → rates_for defaults to 1
-    assert_in_delta 2921.92, @statement.portfolio_value, 0.001
+    assert_raises(Money::ConversionError) { @statement.portfolio_value }
   end
 
   test "current_holdings includes holdings from every investment account regardless of currency" do

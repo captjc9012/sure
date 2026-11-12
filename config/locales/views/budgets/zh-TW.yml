@@ -18,6 +18,7 @@ zh-TW:
       income: 收入
       expenses: 支出
     budgeted_summary:
+      income_surplus: "超出預期收入 %{amount}"
       expected_income: 預期收入
       budgeted: 預算
       earned: 已賺得 %{amount}

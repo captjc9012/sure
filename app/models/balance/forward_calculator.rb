@@ -135,7 +135,13 @@ class Balance::ForwardCalculator < Balance::BaseCalculator
     end
 
     def calc_end_date
-      [ account.entries.excluding_pending.maximum(:date), account.holdings.maximum(:date) ].compact.max || Date.current
+      latest_data_date = [ account.entries.excluding_pending.maximum(:date), account.holdings.maximum(:date) ].compact.max || Date.current
+      if latest_data_date > Date.current
+        Rails.logger.info("Actual balance cutoff: account=#{account.id}, as_of=#{Date.current}, future_data_through=#{latest_data_date}")
+      end
+      # Holdings are materialized only through today. Extending balances beyond
+      # that horizon invents zero-valued positions and phantom market losses.
+      [ latest_data_date, Date.current ].min
     end
 
     # Negative entries amount on an "asset" account means, "account value has increased"

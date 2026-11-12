@@ -3,6 +3,28 @@ require "test_helper"
 class IncomeStatementTest < ActiveSupport::TestCase
   include EntriesTestHelper
 
+  test "all income statement aggregations refuse missing dated foreign rates" do
+    family = families(:empty)
+    account = family.accounts.create!(name: "Foreign", balance: 0, currency: "EUR", accountable: Depository.new)
+    entry = create_transaction(account: account, currency: "EUR", date: Date.current, amount: 25)
+    ExchangeRate.where(from_currency: "EUR", to_currency: family.currency).delete_all
+    ExchangeRate.stubs(:provider).returns(nil)
+    period = Period.current_month
+    scope = family.transactions.visible.excluding_pending.in_period(period)
+    queries = [
+      IncomeStatement::Totals.new(family, transactions_scope: scope, date_range: period.date_range, included_account_ids: [ account.id ]),
+      IncomeStatement::DailyExpenseTotals.new(family, transactions_scope: scope, date_range: period.date_range, included_account_ids: [ account.id ]),
+      IncomeStatement::FamilyStats.new(family, account_ids: [ account.id ]),
+      IncomeStatement::CategoryStats.new(family, account_ids: [ account.id ])
+    ]
+    queries.each do |query|
+      assert_raises(Money::ConversionError, query.class.name) { query.call }
+    end
+
+    ExchangeRate.create!(from_currency: "EUR", to_currency: family.currency, date: entry.date, rate: 1.2)
+    assert_equal 30, queries.first.call.sum(&:total)
+  end
+
   setup do
     @family = families(:empty)
 

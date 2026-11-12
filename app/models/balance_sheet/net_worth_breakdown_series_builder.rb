@@ -111,6 +111,7 @@ class BalanceSheet::NetWorthBreakdownSeriesBuilder
         account_ids: accounts.map(&:id),
         account_active_until_dates: disabled_account_active_until_dates(accounts),
         currency: family.currency,
+        strict_currency_conversion: true,
         period: period,
         interval: INTERVAL,
         favorable_direction: favorable_direction

@@ -15,6 +15,8 @@ class IncomeStatement::Totals
     # No finance accounts means no transactions to report
     return [] if @included_account_ids&.empty?
 
+    validate_transaction_rates!
+
     ActiveRecord::Base.connection.select_all(query_sql).map do |row|
       TotalsRow.new(
         parent_category_id: row["parent_category_id"],

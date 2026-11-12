@@ -1,5 +1,24 @@
 # Repository guidance
 
+## Local demo budget-utilization fix
+
+- This checkout starts from v0.7.6 (`605d0028d80becc95f7f9ce3084ec0f00122d772`) and is used by the adjacent `sure-demo/` local deployment.
+- Reports use `Budget#percent_of_budget_spent`, the same monthly spending-limit calculation used by the budget/planning UI. Category allocations are not the monthly spending limit.
+- An uninitialized budget has no utilization value. Calculation failures must propagate instead of being silently displayed as missing budget data.
+- Run report/budget regression tests against the isolated database in `../sure-demo/compose.test.yml`; never point Rails tests at the demo database.
+- The local derived image is defined in `../sure-demo/Dockerfile.fix`. Keep its controller identical to the tested source; no live-only container edits.
+- Report expense totals are gross outflows; budget actual spending nets inflows within each top-level category and floors each category at zero. Genuine refunds can therefore make the totals differ.
+- Transfers whose two legs the demo generator creates are known pairs and must go through `Transfer#confirm!`: ordinary movements and card payments are excluded, loan principal remains an expense, and receiving legs are funds movement. This does not change the pending status of real auto-match suggestions.
+
+
+## Financial metric contracts
+
+- Report cash-flow breakdowns and exports share `IncomeStatement#reportable_transactions`: posted reportable transactions only, with the existing finance-account, tax-account, kind and activity-label rules. Trades are portfolio activity, not household income.
+- Forward balance materialization must share holdings' actual-data horizon, ending no later than the calculation's current date. Keep future ledger entries, but do not materialize their dates without matching holdings. Preserve the cross-day regression tests.
+- Missing FX in the audited aggregate paths raises a dated conversion error. Zero balances need no FX. The adjacent deployment's fixed EUR/USD and GBP/USD rates are isolated synthetic fixtures, never real-market data.
+- Demo parent allocations include their children; monthly limits sum roots only. Demo investment accounts must have their documented subtypes.
+- Current source/deployment evidence and metric definitions live in `../sure-demo/FINANCIAL_AUDIT.md`; preserve existing report-budget and known-transfer fixes.
+
 ## Working in the repository
 
 - Read [architecture and conventions](docs/llm-guides/architecture.md) before changing code, and the relevant [task guides](docs/llm-guides/README.md).
@@ -42,3 +61,9 @@ Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavi
 - Read [provider sync guidance](docs/llm-guides/providers.md) when changing imports, pending transactions, FX metadata or diagnostics. Use `DebugLogEntry.capture(...)` for support-relevant failures and partial responses, with provider/source metadata and family/account-provider context where available.
 - For securities providers, follow [adding a securities provider](docs/llm-guides/adding-a-securities-provider.md).
 - For feature rollout, follow [preview-feature gating](docs/llm-guides/gating-a-preview-feature.md); for goals, read the [Goals guide](docs/llm-guides/goals.md).
+
+## Local commit secret-guard exceptions
+
+- The local ecc-guard hook flags credential-named variables assigned API/fixture lookup expressions, the public demo-key constant, and the UUID lock owner. Eleven existing lines have narrow trailing `ecc-guard-ignore` comments after inspecting their full contents.
+- Keep the guard enabled. Do not replace these annotations with repository-wide rule or file ignores. Their before/after byte provenance and independent positive/negative control are in `../sure-demo/evidence/guard-annotation-provenance.json` and `guard-independent-verification.json`.
+- These annotations change no executable behavior. Original test/runtime source hashes remain historical evidence; `../sure-demo/evidence/commit-source-sha256.txt` identifies the annotated commit version.

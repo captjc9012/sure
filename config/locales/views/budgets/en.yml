@@ -21,6 +21,7 @@ en:
       income: "Income"
       expenses: "Expenses"
     budgeted_summary:
+      income_surplus: "%{amount} above expected income"
       expected_income: "Expected income"
       budgeted: "Budgeted"
       earned: "%{amount} earned"

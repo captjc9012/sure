@@ -8,6 +8,10 @@ class InvestmentStatement::Totals
   def call
     return empty_result if @account_ids.empty?
 
+    entries = @family.entries.where(account_id: @account_ids, date: @date_range, excluded: false)
+      .where("entryable_type = 'Trade' OR (entryable_type = 'Transaction' AND entryable_id IN (?))",
+        Transaction.excluding_pending.where(investment_activity_label: [ "Dividend", "Interest" ]).select(:id))
+    ExchangeRate.validate_entry_rates!(entries, to: @family.currency)
     result = ActiveRecord::Base.connection.select_one(query_sql)
 
     {
@@ -62,7 +66,6 @@ class InvestmentStatement::Totals
     # relying on qty: 0 to keep the buckets disjoint. Without this guard such
     # a row would be counted twice: once by direction and once as income.
     #
-    # Missing FX rates preserve InvestmentStatement's existing 1:1 fallback.
     #
     # account_ids is already scoped to the family's visible (draft/active)
     # investment accounts, so the query trusts that input and skips a join back

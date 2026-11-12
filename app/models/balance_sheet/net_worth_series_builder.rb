@@ -10,6 +10,7 @@ class BalanceSheet::NetWorthSeriesBuilder
         account_ids: historical_account_ids,
         account_active_until_dates: disabled_account_active_until_dates,
         currency: family.currency,
+        strict_currency_conversion: true,
         period: period,
         favorable_direction: "up"
       )
