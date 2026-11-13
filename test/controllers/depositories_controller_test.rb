@@ -8,6 +8,29 @@ class DepositoriesControllerTest < ActionDispatch::IntegrationTest
     @account = accounts(:depository)
   end
 
+  test "editing a manual cash balance confirms only the matching saving and preserves earmarks" do
+    account = @user.family.accounts.create!(name: "Trip savings", balance: 1000, cash_balance: 1000,
+      currency: "USD", accountable: Depository.new)
+    opening = account.entries.create!(date: 1.year.ago.to_date, amount: 1000, currency: "USD",
+      name: "Opening", entryable: Valuation.new(kind: "opening_anchor"))
+    account.balances.create!(date: Date.current, currency: "USD", balance: 1000, cash_balance: 1000,
+      start_cash_balance: 1000, start_non_cash_balance: 0, flows_factor: 1)
+    goal = @user.family.goals.new(name: "Trip", target_amount: 20000, currency: "USD")
+    goal.goal_accounts.build(account: account, allocated_amount: 500)
+    goal.save!
+    saving = goal.goal_pledges.create!(account: account, amount: 200, kind: "manual_save", currency: "USD")
+    transfer = goal.goal_pledges.create!(account: account, amount: 250, kind: "transfer", currency: "USD")
+
+    patch depository_path(account), params: { account: { balance: "1200.00" } }
+
+    assert_redirected_to account_path(account)
+    assert_equal 1200, account.reload.balance
+    assert_equal 1000, opening.reload.amount
+    assert saving.reload.status_matched?
+    assert transfer.reload.status_open?
+    assert_equal 500, goal.reload.current_balance
+  end
+
   # The provider link's visibility and the controller's gate are two
   # expressions of one rule, and they disagreed. ConnectorAuthorizable requires
   # `member_connectable? && Current.user&.member?`; the selector asked only

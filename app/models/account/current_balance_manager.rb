@@ -42,6 +42,10 @@ class Account::CurrentBalanceManager
       set_current_balance_for_linked_account(balance, date || Date.current)
     else
       result = set_current_balance_for_manual_account(balance)
+      unless result.success?
+        Rails.logger.error("[ManualSavings] account=#{account.id} balance_update_failed error=#{result.error}")
+        return result
+      end
 
       # Update cache field so changes appear immediately to the user
       account.update!(balance: balance)
@@ -74,17 +78,27 @@ class Account::CurrentBalanceManager
     #
     # For more documentation on these auto-update strategies, see the test cases.
     def set_current_balance_for_manual_account(balance)
-      # If we're dealing with a cash account that has no reconciliations, use "Transaction adjustment" strategy (update opening balance to "back in" to the desired current balance)
-      if account.balance_type == :cash && account.valuations.reconciliation.empty?
+      # A pending manual saving expresses a current deposit rather than a
+      # correction to the opening balance; keep it on the dated valuation path.
+      if account.balance_type == :cash && account.valuations.reconciliation.empty? && !pending_manual_saving?
         adjust_opening_balance_with_delta(new_balance: balance, old_balance: account.balance)
       else
+        Rails.logger.info("[ManualSavings] account=#{account.id} strategy=dated_reconciliation") if pending_manual_saving?
         existing_reconciliation = account.entries.valuations.find_by(date: Date.current)
 
-        result = reconciliation_manager.reconcile_balance(balance: balance, date: Date.current, existing_valuation_entry: existing_reconciliation)
+        result = reconciliation_manager.reconcile_balance(balance: balance, date: Date.current, existing_valuation_entry: existing_reconciliation, prior_balance: account.balance)
 
         # Normalize to expected result format
-        Result.new(success?: result.success?, changes_made?: true, error: result.error_message)
+        Result.new(success?: result.success?, changes_made?: result.success?, error: result.error_message)
       end
+    end
+
+    # An outstanding manual saving is explicit intent to record money saved
+    # now. Preserve its date and the opening history through the reconciliation
+    # path, which matches the positive delta and records the supporting valuation.
+    def pending_manual_saving?
+      GoalPledge.where(account_id: account.id, kind: "manual_save", status: "open")
+        .where("expires_at >= ?", Time.current).exists?
     end
 
     def adjust_opening_balance_with_delta(new_balance:, old_balance:)

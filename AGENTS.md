@@ -67,3 +67,11 @@ Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavi
 - The local ecc-guard hook flags credential-named variables assigned API/fixture lookup expressions, the public demo-key constant, and the UUID lock owner. Eleven existing lines have narrow trailing `ecc-guard-ignore` comments after inspecting their full contents.
 - Keep the guard enabled. Do not replace these annotations with repository-wide rule or file ignores. Their before/after byte provenance and independent positive/negative control are in `../sure-demo/evidence/guard-annotation-provenance.json` and `guard-independent-verification.json`.
 - These annotations change no executable behavior. Original test/runtime source hashes remain historical evidence; `../sure-demo/evidence/commit-source-sha256.txt` identifies the annotated commit version.
+
+## 手動儲蓄投入確認
+
+- 手動帳戶有尚未過期的 `manual_save` 投入時，更新餘額須建立／更新當日對帳，不得改寫期初餘額；以正向增加額套用既有金額、日期容差配對，保留轉帳類投入的確認流程。
+- 對帳失敗不可更新帳戶快取或儲存未完成的對帳紀錄。固定目標分配額不因投入確認自動增加；進度仍按已指定資金計算。
+- 修正及示範重播紀錄見 `sure-demo/MANUAL_SAVINGS_FIX.md`（來源 checkout 請參閱相鄰部署目錄）。
+
+- 首次當日對帳須使用呼叫端已知的更新前餘額，不能依賴可能缺少／過期的每日餘額。已有同日對帳時，優先使用對帳本身更新前金額，避免重複配對。

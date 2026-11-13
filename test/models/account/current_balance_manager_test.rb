@@ -13,6 +13,69 @@ class Account::CurrentBalanceManagerTest < ActiveSupport::TestCase
     )
   end
 
+  include BalanceTestHelper
+
+  test "manual savings pledge uses a dated reconciliation instead of rewriting opening history" do
+    account, goal, pledge, opening = manual_savings_scenario
+
+    result = account.set_current_balance(1100)
+
+    assert result.success?, result.error
+    assert pledge.reload.status_matched?, "the exact 200 increase must confirm the manual saving"
+    assert_equal 1000, opening.reload.amount
+    assert_equal 1100, account.reload.balance
+    assert_equal 1100, account.entries.valuations.find_by!(date: Date.current).amount
+    assert_equal 500, goal.reload.current_balance, "a fixed earmark is not automatically increased by a pledge"
+  end
+
+  test "manual savings rejects decreases mismatches unchanged balances and repeat saves" do
+    account, _goal, pledge, opening = manual_savings_scenario
+
+    [ 700, 800, 850 ].each do |balance|
+      result = account.set_current_balance(balance)
+      assert result.success?, result.error
+      assert pledge.reload.status_open?
+    end
+    assert_equal 1000, opening.reload.amount
+
+    # An existing same-date reconciliation must compare against its own latest
+    # amount, even before the asynchronous balance materialization catches up.
+    assert account.set_current_balance(1050).success?
+    assert pledge.reload.status_matched?
+    second = pledge.goal.goal_pledges.create!(account: account, amount: 200, kind: "manual_save", currency: "USD")
+    assert account.set_current_balance(1050).success?
+    assert second.reload.status_open?, "saving the same total cannot count the contribution twice"
+  end
+
+  test "first manual saving uses the current balance even when daily materialization is missing or stale" do
+    [ nil, 1100 ].each do |daily_balance|
+      account, _goal, pledge, opening = manual_savings_scenario
+      account.balances.delete_all
+      create_balance(account: account, date: Date.current, balance: daily_balance) if daily_balance
+
+      result = account.set_current_balance(1100)
+
+      assert result.success?, result.error
+      assert pledge.reload.status_matched?, "daily materialization must not change the known 900 to 1100 delta"
+      assert_equal 1000, opening.reload.amount
+    end
+  end
+
+  test "failed manual savings reconciliation leaves the cached balance and pledge unchanged" do
+    account, _goal, pledge, opening = manual_savings_scenario
+    Entry.any_instance.stubs(:save!).raises(ActiveRecord::RecordInvalid.new(Entry.new))
+
+    assert_no_difference "account.entries.count" do
+      result = account.set_current_balance(1100)
+      assert_not result.success?
+      assert_not result.changes_made?
+    end
+    assert_equal 900, account.reload.balance
+    assert_equal 1000, opening.reload.amount
+    assert pledge.reload.status_open?
+  end
+
+
   # -------------------------------------------------------------------------------------------------
   # Manual account current balance management
   #
@@ -361,4 +424,19 @@ class Account::CurrentBalanceManagerTest < ActiveSupport::TestCase
 
     assert_equal @linked_account.balance, @linked_account.balance
   end
+  private
+    def manual_savings_scenario
+      account = @family.accounts.create!(name: "Manual savings", balance: 900, cash_balance: 900,
+        currency: "USD", accountable: Depository.new)
+      opening = account.entries.create!(date: 1.year.ago.to_date, name: "Opening", amount: 1000,
+        currency: "USD", entryable: Valuation.new(kind: "opening_anchor"))
+      account.entries.create!(date: 10.days.ago.to_date, name: "Expense", amount: 100,
+        currency: "USD", entryable: Transaction.new)
+      create_balance(account: account, date: Date.current, balance: 900)
+      goal = @family.goals.new(name: "Trip", target_amount: 20000, currency: "USD")
+      goal.goal_accounts.build(account: account, allocated_amount: 500)
+      goal.save!
+      pledge = goal.goal_pledges.create!(account: account, amount: 200, kind: "manual_save", currency: "USD")
+      [ account, goal, pledge, opening ]
+    end
 end

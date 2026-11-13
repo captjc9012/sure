@@ -6,7 +6,7 @@ class Account::ReconciliationManager
   end
 
   # Reconciles balance by creating a Valuation entry. If existing valuation is provided, it will be updated instead of creating a new one.
-  def reconcile_balance(balance:, date: Date.current, dry_run: false, existing_valuation_entry: nil)
+  def reconcile_balance(balance:, date: Date.current, dry_run: false, existing_valuation_entry: nil, prior_balance: nil)
     old_balance_components = old_balance_components(reconciliation_date: date, existing_valuation_entry: existing_valuation_entry)
     prepared_valuation = prepare_reconciliation(balance, date, existing_valuation_entry)
     # Captured before save!: the amount this valuation already had on disk
@@ -15,7 +15,7 @@ class Account::ReconciliationManager
 
     unless dry_run
       prepared_valuation.save!
-      contribution = valuation_contribution(prepared_valuation, prior_valuation_amount, old_balance_components)
+      contribution = valuation_contribution(prepared_valuation, prior_valuation_amount, old_balance_components, prior_balance)
       GoalPledge::Reconciler.new(prepared_valuation, valuation_delta: contribution).run
     end
 
@@ -60,13 +60,15 @@ class Account::ReconciliationManager
     #      self-heals. The valuation's own prior amount is immune to that
     #      race, and once the sync lands the two sources are identical (the
     #      valuation anchors that date's end_balance).
-    #   2. The balances-table row for the date (first reconcile on a date).
+    #   2. The pre-update current balance, when the caller knows it. Manual
+    #      current-balance edits must not depend on daily rows being materialized.
+    #   3. The balances-table row for the date (first reconcile on a date).
     #      This can still be stale in one residual window: a reconcile on a
     #      NEW date racing the previous date's pending sync reads a
     #      carried-forward row. A missed match self-heals on the next re-save
     #      — the pledge stays open and retryable until `expires_at`, and the
     #      date/amount tolerance in GoalPledge#matches? accepts the retry.
-    #   3. 0, for a brand-new account with no balance record yet, so the
+    #   4. 0, for a brand-new account with no balance record yet, so the
     #      first reconciliation's full balance is its contribution.
     #
     # The delta is only ever consumed by manual_save pledges, which never
@@ -75,8 +77,8 @@ class Account::ReconciliationManager
     # investment accounts (a market move isn't a deposit). So a positive delta
     # only feeds depository saves, where balances are positive and a positive
     # delta really is a deposit — the reconciler's positive-delta guard holds.
-    def valuation_contribution(valuation, prior_valuation_amount, old_balance_components)
-      prior_balance = prior_valuation_amount || old_balance_components[:balance] || 0
+    def valuation_contribution(valuation, prior_valuation_amount, old_balance_components, current_balance)
+      prior_balance = prior_valuation_amount || current_balance || old_balance_components[:balance] || 0
       valuation.amount.to_d - prior_balance.to_d
     end
 
