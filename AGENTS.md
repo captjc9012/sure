@@ -64,8 +64,9 @@ Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavi
 
 ## Local commit secret-guard exceptions
 
-- The local ecc-guard hook flags credential-named variables assigned API/fixture lookup expressions, the public demo-key constant, and the UUID lock owner. Eleven existing lines have narrow trailing `ecc-guard-ignore` comments after inspecting their full contents.
+- The local ecc-guard hook flags credential-named variables assigned API/fixture lookup expressions, the public demo-key constant, and the UUID lock owner. The initial eleven lines have narrow trailing `ecc-guard-ignore` comments after inspecting their full contents.
 - Keep the guard enabled. Do not replace these annotations with repository-wide rule or file ignores. Their before/after byte provenance and independent positive/negative control are in `../sure-demo/evidence/guard-annotation-provenance.json` and `guard-independent-verification.json`.
+- The zh-TW `email_confirmations.new.invalid_token` message has one additional line-scoped false-positive annotation; its YAML data is unchanged. Provenance and independent controls are in `../sure-demo/evidence/full-guard-annotation-provenance.json` and `full-guard-independent-verification.json`.
 - These annotations change no executable behavior. Original test/runtime source hashes remain historical evidence; `../sure-demo/evidence/commit-source-sha256.txt` identifies the annotated commit version.
 
 ## 手動儲蓄投入確認
@@ -75,3 +76,9 @@ Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavi
 - 修正及示範重播紀錄見 `sure-demo/MANUAL_SAVINGS_FIX.md`（來源 checkout 請參閱相鄰部署目錄）。
 
 - 首次當日對帳須使用呼叫端已知的更新前餘額，不能依賴可能缺少／過期的每日餘額。已有同日對帳時，優先使用對帳本身更新前金額，避免重複配對。
+
+## 缺匯率與完整測試
+
+- 主要財務彙總缺匯率仍須拋出 Money::ConversionError，不得代入 0 或 1。共用帳戶側欄在呈現邊界明確顯示缺少的幣別／日期、記錄日誌並列出可見帳戶的原幣餘額，不應遮蔽頁面原本的驗證錯誤。
+- 缺匯率的側欄不可快取；只用 cache_if 在成功時快取，且保留成功／失敗／恢復、跨家庭可見範圍與非匯率例外傳播測試。
+- 完整測試只使用獨立 Compose project 的資料庫與 Redis；一次只執行一個 Rails 測試程序，採用 compose.test.yml 的較保守 GC 設定。原始 2026-11-13 中斷紀錄不可改寫成通過；後續診斷與完整測試結果另存 sure-demo/FULL_TEST_DIAGNOSIS.md（來源 checkout 參閱相鄰部署目錄）。

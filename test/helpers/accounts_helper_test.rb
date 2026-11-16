@@ -26,6 +26,12 @@ class AccountsHelperTest < ActionView::TestCase
     assert_not_equal before, sidebar_key
   end
 
+  test "sidebar only handles conversion errors and propagates other failures" do
+    @user.family.balance_sheet.stubs(:assets).raises(RuntimeError, "unexpected calculation failure")
+
+    assert_raises(RuntimeError) { sidebar_account_groups(@user.family) }
+  end
+
   private
     def sidebar_key
       account_sidebar_tabs_cache_key(family: @user.family, active_tab: "all", mobile: false)

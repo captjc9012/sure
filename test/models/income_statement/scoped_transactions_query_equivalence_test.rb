@@ -5,7 +5,9 @@ require "test_helper"
 # pre-refactor implementation returned. The legacy implementations are
 # verbatim copies from main (test/support/legacy_income_statement_*.rb), and
 # each test runs both over the same data across the class's full option
-# matrix (account scoping, trade inclusion, stats interval).
+# matrix (account scoping, trade inclusion, stats interval). Parity applies to
+# priced data; missing-rate rejection intentionally replaces the legacy 1:1
+# fallback and is checked separately.
 class IncomeStatement::ScopedTransactionsQueryEquivalenceTest < ActiveSupport::TestCase
   include EntriesTestHelper
 
@@ -40,7 +42,8 @@ class IncomeStatement::ScopedTransactionsQueryEquivalenceTest < ActiveSupport::T
 
     ExchangeRate.create! from_currency: "EUR", to_currency: "USD", date: 5.days.ago.to_date, rate: 2
     create_transaction(account: @eur, amount: 40, currency: "EUR", date: 5.days.ago.to_date)
-    create_transaction(account: @eur, amount: 10, currency: "EUR", date: 10.days.ago.to_date) # no rate row, falls back to 1
+    ExchangeRate.create! from_currency: "EUR", to_currency: "USD", date: 10.days.ago.to_date, rate: 1.5
+    create_transaction(account: @eur, amount: 10, currency: "EUR", date: 10.days.ago.to_date)
 
     create_transaction(account: @retirement, amount: 300, date: 5.days.ago.to_date) # tax-advantaged, excluded
     create_transaction(account: @unreported, amount: 45, date: 5.days.ago.to_date) # exclude_from_reports, excluded
@@ -98,6 +101,18 @@ class IncomeStatement::ScopedTransactionsQueryEquivalenceTest < ActiveSupport::T
         )
       end
     end
+  end
+
+  test "missing historical FX is rejected even when another ledger day has a rate" do
+    date = 10.days.ago.to_date
+    ExchangeRate.where(from_currency: "EUR", to_currency: "USD", date: date).delete_all
+    query = IncomeStatement::Totals.new(@family, transactions_scope: transactions_scope, date_range: @period.date_range)
+
+    error = assert_raises(Money::ConversionError) { query.call }
+
+    assert_equal "EUR", error.from_currency
+    assert_equal "USD", error.to_currency
+    assert_equal date, error.date
   end
 
   private

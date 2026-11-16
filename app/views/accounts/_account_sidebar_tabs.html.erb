@@ -4,11 +4,12 @@
     ERB dependency tracker mis-parses as a bogus "Ds/D" template dependency
     and then logs "Couldn't find template for digesting: Ds/D" on every cache
     miss. The cache key is already manually versioned via
-    account_sidebar_tabs_cache_key ("account_sidebar_tabs_v5",
+    account_sidebar_tabs_cache_key ("account_sidebar_tabs_v6",
     invalidate_on_data_updates: true), so we opt out of automatic template
     digesting. Bump that version suffix when changing this template or its
     sidebar dependencies. %>
-<% cache account_sidebar_tabs_cache_key(family: family, active_tab: active_tab, mobile: mobile), expires_in: 12.hours, skip_digest: true do %>
+<% sidebar_groups = sidebar_account_groups(family) %>
+<% cache_if sidebar_groups[:error].nil?, account_sidebar_tabs_cache_key(family: family, active_tab: active_tab, mobile: mobile), expires_in: 12.hours, skip_digest: true do %>
 <% sortable = Current.user&.account_order&.manual? %>
 <%= tag.div id: "account-sidebar-tabs",
       data: sortable ? {
@@ -20,6 +21,20 @@
       <%= render DS::Alert.new(title: t("accounts.sidebar.missing_data"), variant: :warning) do %>
         <p class="text-secondary"><%= t("accounts.sidebar.missing_data_description", product: product_name) %></p>
         <p><%= link_to t("accounts.sidebar.configure_providers"), settings_hosting_path, class: "underline font-medium" %></p>
+      <% end %>
+    </div>
+  <% end %>
+
+  <% if (conversion_error = sidebar_groups[:error]) %>
+    <div data-testid="sidebar-fx-unavailable" class="mb-3">
+      <%= render DS::Alert.new(title: t("accounts.sidebar.fx_unavailable"), variant: :error, live: :alert) do %>
+        <p><%= t("accounts.sidebar.fx_unavailable_description", from: conversion_error.from_currency, to: conversion_error.to_currency, date: conversion_error.date) %></p>
+      <% end %>
+      <% family.accounts.visible.accessible_by(Current.user).order(:name).each do |account| %>
+        <%= link_to account_path(account), class: "flex justify-between gap-2 py-2 text-primary" do %>
+          <span><%= account.name %></span>
+          <span class="privacy-sensitive"><%= format_money(account.balance_money) %></span>
+        <% end %>
       <% end %>
     </div>
   <% end %>
@@ -43,7 +58,7 @@
             class: "flex-1 justify-start"
           ) %>
 
-          <%= render "accounts/sort_mode_toggle", sortable: sortable && family.balance_sheet.assets.account_groups.any? %>
+          <%= render "accounts/sort_mode_toggle", sortable: sortable && sidebar_groups[:assets].any? %>
 
           <%= render DS::ExpandToggle.new(
             expand_label: t("accounts.sidebar.expand_all"),
@@ -53,10 +68,10 @@
           ) %>
         </div>
 
-        <%= render "accounts/sort_mode_bar", sortable: sortable && family.balance_sheet.assets.account_groups.any? %>
+        <%= render "accounts/sort_mode_bar", sortable: sortable && sidebar_groups[:assets].any? %>
 
         <div>
-          <% family.balance_sheet.assets.account_groups.each do |group| %>
+          <% sidebar_groups[:assets].each do |group| %>
             <%= render "accounts/accountable_group", account_group: group, mobile: mobile, sortable: sortable %>
           <% end %>
         </div>
@@ -75,7 +90,7 @@
               class: "flex-1 justify-start"
             ) %>
 
-          <%= render "accounts/sort_mode_toggle", sortable: sortable && family.balance_sheet.liabilities.account_groups.any? %>
+          <%= render "accounts/sort_mode_toggle", sortable: sortable && sidebar_groups[:liabilities].any? %>
 
           <%= render DS::ExpandToggle.new(
             expand_label: t("accounts.sidebar.expand_all"),
@@ -85,10 +100,10 @@
           ) %>
         </div>
 
-        <%= render "accounts/sort_mode_bar", sortable: sortable && family.balance_sheet.liabilities.account_groups.any? %>
+        <%= render "accounts/sort_mode_bar", sortable: sortable && sidebar_groups[:liabilities].any? %>
 
         <div>
-          <% family.balance_sheet.liabilities.account_groups.each do |group| %>
+          <% sidebar_groups[:liabilities].each do |group| %>
             <%= render "accounts/accountable_group", account_group: group, mobile: mobile, sortable: sortable %>
           <% end %>
         </div>
@@ -107,7 +122,7 @@
               class: "flex-1 justify-start"
             ) %>
 
-          <%= render "accounts/sort_mode_toggle", sortable: sortable && family.balance_sheet.account_groups.any? %>
+          <%= render "accounts/sort_mode_toggle", sortable: sortable && (sidebar_groups[:assets] + sidebar_groups[:liabilities]).any? %>
 
           <%= render DS::ExpandToggle.new(
             expand_label: t("accounts.sidebar.expand_all"),
@@ -117,10 +132,10 @@
           ) %>
         </div>
 
-        <%= render "accounts/sort_mode_bar", sortable: sortable && family.balance_sheet.account_groups.any? %>
+        <%= render "accounts/sort_mode_bar", sortable: sortable && (sidebar_groups[:assets] + sidebar_groups[:liabilities]).any? %>
 
         <div>
-          <% family.balance_sheet.account_groups.each do |group| %>
+          <% (sidebar_groups[:assets] + sidebar_groups[:liabilities]).each do |group| %>
             <%= render "accounts/accountable_group", account_group: group, mobile: mobile, all_tab: true, sortable: sortable %>
           <% end %>
         </div>

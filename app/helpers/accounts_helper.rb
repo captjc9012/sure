@@ -1,4 +1,14 @@
 module AccountsHelper
+  # A layout must not turn an unrelated form's validation error into a 500.
+  # Keep conversion failures explicit here; financial aggregates still raise.
+  def sidebar_account_groups(family)
+    sheet = family.balance_sheet
+    { assets: sheet.assets.account_groups, liabilities: sheet.liabilities.account_groups, error: nil }
+  rescue Money::ConversionError => error
+    Rails.logger.error("[AccountSidebarFX] family=#{family.id} from=#{error.from_currency} to=#{error.to_currency} date=#{error.date}")
+    { assets: [], liabilities: [], error: error }
+  end
+
   def summary_card(title:, &block)
     content = capture(&block)
     render "accounts/summary_card", title: title, content: content
@@ -56,7 +66,7 @@ module AccountsHelper
       end
 
     [
-      family.build_cache_key("account_sidebar_tabs_v5", invalidate_on_data_updates: true),
+      family.build_cache_key("account_sidebar_tabs_v6", invalidate_on_data_updates: true),
       Current.user&.id,
       shares_version,
       active_tab,

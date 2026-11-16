@@ -117,10 +117,10 @@ class RedbarkAccount::ProcessorTest < ActiveSupport::TestCase
   # bug in #3747 moved it by +X, so it overstated the family's net worth by
   # 2X, exactly the amount the card was owing).
   test "syncing a Plaid card that owes X reduces net worth by X" do
-    # Net worth is in the family currency. With the fixture family on USD and
-    # no AUD->USD rate, the AUD card's balance only counts at 1:1, so measure
-    # in the card's own currency rather than lean on that.
+    # Measure the card in AUD while explicitly pricing the fixture family's
+    # other USD accounts. Their unchanged value must cancel from the delta.
     @family.update!(currency: @currency)
+    ExchangeRate.create!(from_currency: "USD", to_currency: @currency, date: Date.current, rate: 1.5)
     _, ra = link(CreditCard, provider: "plaid", balance: "19902.38")
     before = BalanceSheet.new(@family).net_worth
     RedbarkAccount::Processor.new(ra).process

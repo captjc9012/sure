@@ -126,6 +126,8 @@ zh-TW:
     update:
       success: '%{type} 帳戶已更新'
     sidebar:
+      fx_unavailable: "無法計算帳戶總額"
+      fx_unavailable_description: "缺少 %{date} 的 %{from}/%{to} 匯率，換算總額無法計算；下方帳戶餘額保留原幣別。"
       missing_data: 缺少歷史資料
       missing_data_description: '%{product} 會向第三方供應商取得歷史匯率、證券價格等資料。要算出正確的歷史餘額就需要這些資料。'
       configure_providers: 在此設定您的供應商。
@@ -196,5 +198,5 @@ zh-TW:
       no_providers: 目前未設定任何供應商
   email_confirmations:
     new:
-      invalid_token: 無效或已過期的驗證連結。
+      invalid_token: 無效或已過期的驗證連結。 # ecc-guard-ignore: localized invalid-link message, not a credential
       success_login: 您的電子郵件已通過驗證。請使用新的電子郵件地址登入。

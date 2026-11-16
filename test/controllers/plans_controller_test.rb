@@ -53,6 +53,36 @@ class PlansControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, response.body.scan(I18n.t("plans.goals_card.currency_warning", count: 2, currencies: "EUR")).size
   end
 
+  test "missing sidebar FX stays explicit without breaking page errors or caching away recovery" do
+    hidden = families(:empty).accounts.create!(name: "Other household", accountable: Depository.new, currency: "USD", balance: 900)
+    euro = @user.family.accounts.create!(name: "Euro reserve", accountable: Depository.new,
+      currency: "EUR", balance: 100)
+    ExchangeRate.stubs(:provider).returns(nil)
+    original_store = PlansController.cache_store
+    original_caching = PlansController.perform_caching
+    PlansController.cache_store = ActiveSupport::Cache::MemoryStore.new
+    PlansController.perform_caching = true
+
+    get plan_url
+
+    assert_response :success
+    assert_select "[data-testid='sidebar-fx-unavailable']", minimum: 1
+    assert_select "a[href=?]", account_path(euro), minimum: 1
+    assert_select "a[href=?]", account_path(hidden), count: 0
+    assert_match "EUR", response.body
+    assert_match "USD", response.body
+    assert_raises(Money::ConversionError) { @user.family.balance_sheet.assets.total }
+
+    ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: Date.current, rate: 1.1)
+    get plan_url
+
+    assert_response :success
+    assert_select "[data-testid='sidebar-fx-unavailable']", count: 0
+  ensure
+    PlansController.cache_store = original_store if original_store
+    PlansController.perform_caching = original_caching
+  end
+
   test "redirects users without preview access to budgets" do
     @user.update!(preferences: (@user.preferences || {}).merge("preview_features_enabled" => false))
 
